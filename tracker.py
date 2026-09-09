@@ -30,6 +30,43 @@ def enviar_foto_telegram(ruta_foto, caption=""):
     except Exception as e:
         print(f"[!] Error enviando foto a Telegram: {e}")
 
+def intentar_resolver_slider(page):
+    # Selectores típicos del botón del deslizador de Alibaba/AliExpress
+    slider_selectors = [
+        "#nc_1_n1z",
+        ".btn_slide",
+        "span[class*='btn_slide']",
+        ".nc-lang-cnt"
+    ]
+    
+    for sel in slider_selectors:
+        try:
+            slider = page.locator(sel).first
+            if slider.is_visible(timeout=3000):
+                print("[*] Deslizador antibot detectado. Intentando arrastrar...")
+                box = slider.bounding_box()
+                if box:
+                    # Mover el ratón al centro del deslizador
+                    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                    page.mouse.down()
+                    
+                    # Simular un arrastre humano hacia la derecha en varios pasos
+                    destino_x = box["x"] + 350
+                    pasos = 25
+                    for i in range(1, pasos + 1):
+                        intermedio_x = box["x"] + (destino_x - box["x"]) * (i / pasos)
+                        page.mouse.move(intermedio_x, box["y"] + box["height"] / 2)
+                        page.wait_for_timeout(20)
+                    
+                    page.mouse.up()
+                    page.wait_for_timeout(3000)
+                    print("[*] Deslizador arrastrado. Continuando...")
+                    return True
+        except Exception as e:
+            print(f"[!] Error al manipular el deslizador: {e}")
+            continue
+    return False
+
 def extraer_precio_pagina(page):
     # Intentar extraer el precio desde los objetos JSON nativos de AliExpress en el DOM
     try:
@@ -122,8 +159,13 @@ def main():
         ])
 
         print(f"[*] Navegando a la URL del producto...")
-        page.goto(URL_PRODUCTO, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(3000)
+        page.goto(URL_PRODUCTO, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(2000)
+
+        # Si aparece el captcha deslizante, lo arrastramos
+        intentar_resolver_slider(page)
+
+        precio_actual = extraer_precio_pagina(page)
 
         # Si aparece el modal de cookies o bienvenida, intentar cerrarlo
         for sel in ["button:has-text('Aceptar')", "button:has-text('Accept all')", ".btn-accept", ".pop-close-btn"]:
