@@ -66,10 +66,20 @@ def main():
     print("[*] Iniciando navegador...")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        
+        # Configuramos el contexto simulando España con resolución estándar
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            locale="es-ES"
+            locale="es-ES",
+            viewport={"width": 1920, "height": 1080}
         )
+        
+        # Inyectamos cookies para forzar país España y moneda Euro
+        context.add_cookies([
+            {"name": "aep_usuc_f", "value": "region=ES&b_locale=es_ES&c_tp=EUR", "domain": ".aliexpress.com", "path": "/"},
+            {"name": "intl_locale", "value": "es_ES", "domain": ".aliexpress.com", "path": "/"}
+        ])
+
         page = context.new_page()
 
         print(f"[*] Comprobando precio en: {URL_PRODUCTO}")
@@ -94,13 +104,11 @@ def main():
                 pass
 
         if precio_previo is None:
-            # Primera ejecución: registra el precio base
             with open(ARCHIVO_PRECIO, "w") as f:
                 f.write(str(precio_actual))
             enviar_telegram(f"🔍 *Monitor activado*\nPrecio inicial del producto: *{precio_actual:.2f} €*")
             print("[*] Primer registro guardado.")
         elif precio_actual < precio_previo:
-            # ¡Bajó de precio!
             descuento = precio_previo - precio_actual
             porcentaje = (descuento / precio_previo) * 100
             msg = (
@@ -114,7 +122,6 @@ def main():
                 f.write(str(precio_actual))
             print(f"[+] Notificación de bajada enviada: {precio_actual} €")
         elif precio_actual > precio_previo:
-            # Si subió, actualizamos el registro sin enviar alerta para no molestar
             with open(ARCHIVO_PRECIO, "w") as f:
                 f.write(str(precio_actual))
             print(f"[*] El precio subió a {precio_actual} €. Registro actualizado.")
