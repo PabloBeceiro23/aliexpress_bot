@@ -4,7 +4,7 @@ import requests
 from playwright.sync_api import sync_playwright
 
 # --- CONFIGURACIÓN ---
-URL_PRODUCTO = "AQUI_TU_URL_DE_ALIEXPRESS"
+URL_PRODUCTO = "https://es.aliexpress.com/item/1005007999908066.html"
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
