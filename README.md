@@ -24,7 +24,7 @@ El workflow reutiliza los secretos de Telegram que ya estaban configurados en el
 | `TELEGRAM_TOKEN` | Token del bot creado con BotFather. |
 | `TELEGRAM_CHAT_ID` | Chat, grupo o canal que recibirá las alertas. |
 
-No necesitas configurar WhatsApp ni crear plantillas. En una bajada de precio se envía un mensaje de texto. Si aparece un CAPTCHA o cualquier otro error, se envía la captura mediante `sendPhoto`; además, GitHub Actions conserva `failure.png` y `failure.txt` como artefactos de diagnóstico.
+No necesitas configurar otra API ni crear plantillas. En una bajada de precio se envía un mensaje de texto. Si aparece un CAPTCHA o cualquier otro error, se envía la captura mediante `sendPhoto`; además, GitHub Actions conserva `failure.png` y `failure.txt` como artefactos de diagnóstico.
 
 Los mensajes proactivos de Telegram funcionan siempre que el bot tenga acceso al chat y el usuario haya iniciado conversación con él cuando sea necesario.
 

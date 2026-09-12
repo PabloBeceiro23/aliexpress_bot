@@ -41,7 +41,7 @@ class PriceNotFoundError(TrackerError):
 
 
 class TelegramError(TrackerError):
-    """Raised when the Telegram Cloud API declines a notification."""
+    """Raised when the Telegram Bot API declines a notification."""
 
 
 @dataclass(frozen=True)
