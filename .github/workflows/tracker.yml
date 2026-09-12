@@ -1,39 +1,81 @@
-name: Monitor AliExpress
+name: Monitor de precio AliExpress
 
 on:
   schedule:
-    # Se ejecuta automáticamente cada 2 horas (al minuto 20 de cada hora par)
-    - cron: '20 */2 * * *'
-  workflow_dispatch: # Habilita el botón manual para probarlo cuando quieras
+    # GitHub Actions ejecuta el cron en UTC. Corre a los minutos 17 de cada hora par.
+    - cron: '17 */2 * * *'
+  workflow_dispatch:
+
+# Evita ejecuciones simultáneas si una consulta tarda más de lo previsto.
+concurrency:
+  group: aliexpress-price-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
 
 jobs:
-  check:
+  check-price:
+    name: Consultar precio y avisar por WhatsApp
     runs-on: ubuntu-latest
+    timeout-minutes: 12
 
     steps:
       - name: Descargar el repositorio
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Instalar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
 
-      - name: Instalar librerías y Chromium
+      - name: Instalar dependencias
         run: |
-          pip install playwright requests
-          playwright install --with-deps chromium
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
 
-      - name: Ejecutar el script
+      - name: Verificar utilidades del rastreador
+        run: |
+          python tracker.py --self-test
+          python scripts/test_notifier.py
+
+      - name: Consultar AliExpress
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python tracker.py
+          PRODUCT_URL: https://es.aliexpress.com/item/1005007999908066.html
+          WA_ACCESS_TOKEN: ${{ secrets.WA_ACCESS_TOKEN }}
+          WA_PHONE_NUMBER_ID: ${{ secrets.WA_PHONE_NUMBER_ID }}
+          WA_RECIPIENT: ${{ secrets.WA_RECIPIENT }}
+          WA_TEMPLATE_PRICE: ${{ vars.WA_TEMPLATE_PRICE || 'aliexpress_price_alert' }}
+          WA_TEMPLATE_FAILURE: ${{ vars.WA_TEMPLATE_FAILURE || 'aliexpress_tracker_error' }}
+          WA_TEMPLATE_LANGUAGE: ${{ vars.WA_TEMPLATE_LANGUAGE || 'es' }}
+          WA_API_VERSION: v26.0
+        run: python tracker.py
 
-      - name: Guardar nuevo precio en GitHub si cambió
+      # Se publica siempre: incluye la captura si hubo CAPTCHA, error de red o
+      # un cambio inesperado de la estructura de la ficha.
+      - name: Subir diagnóstico de fallo
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aliexpress-diagnostic-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Guardar el último precio confirmado
+        if: success()
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add precio_guardado.txt || true
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: actualizar precio guardado" && git push)
+          if git diff --quiet -- price_state.json; then
+            echo "El estado no cambió."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add price_state.json
+          git commit -m "chore: actualizar precio monitorizado"
+          git push
