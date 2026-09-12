@@ -4,7 +4,7 @@ set -euo pipefail
 rm -rf artifacts/integration
 export STATE_FILE="artifacts/integration/test-state.json"
 export ARTIFACTS_DIR="artifacts/integration"
-unset WA_ACCESS_TOKEN WA_PHONE_NUMBER_ID WA_RECIPIENT
+unset TELEGRAM_TOKEN TELEGRAM_CHAT_ID
 
 set +e
 python tracker.py

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Monitor de precio de AliExpress con alertas por WhatsApp Cloud API.
+"""Monitor de precio de AliExpress con alertas por Telegram.
 
 No intenta resolver ni eludir CAPTCHAs. Si la página presenta una verificación,
-el proceso conserva una captura, intenta notificarla por WhatsApp y termina con
+el proceso conserva una captura, intenta notificarla por Telegram y termina con
 error para que GitHub Actions archive el diagnóstico.
 """
 from __future__ import annotations
@@ -40,8 +40,8 @@ class PriceNotFoundError(TrackerError):
     """Raised when a product page is reachable but has no reliable price."""
 
 
-class WhatsAppError(TrackerError):
-    """Raised when the WhatsApp Cloud API declines a notification."""
+class TelegramError(TrackerError):
+    """Raised when the Telegram Cloud API declines a notification."""
 
 
 @dataclass(frozen=True)
@@ -265,127 +265,84 @@ def save_state(price: float, title: str) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-class WhatsAppNotifier:
-    """Minimal official WhatsApp Cloud API client for approved templates."""
+class TelegramNotifier:
+    """Cliente mínimo de la Bot API de Telegram."""
 
     def __init__(self) -> None:
-        self.token = os.getenv("WA_ACCESS_TOKEN")
-        self.phone_number_id = os.getenv("WA_PHONE_NUMBER_ID")
-        self.recipient = os.getenv("WA_RECIPIENT")
-        self.api_version = os.getenv("WA_API_VERSION", "v26.0")
-        self.language = os.getenv("WA_TEMPLATE_LANGUAGE", "es")
-        self.price_template = os.getenv("WA_TEMPLATE_PRICE", "aliexpress_price_alert")
-        self.failure_template = os.getenv("WA_TEMPLATE_FAILURE", "aliexpress_tracker_error")
+        self.token = os.getenv("TELEGRAM_TOKEN")
+        self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     @property
     def configured(self) -> bool:
-        return bool(self.token and self.phone_number_id and self.recipient)
+        return bool(self.token and self.chat_id)
 
     @property
     def base_url(self) -> str:
-        return f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}"
+        return f"https://api.telegram.org/bot{self.token}"
 
-    @property
-    def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"}
-
-    def _post_json(self, endpoint: str, payload: dict[str, Any]) -> None:
+    def _post(self, method: str, **kwargs: Any) -> None:
         response = requests.post(
-            f"{self.base_url}/{endpoint}",
-            headers={**self.headers, "Content-Type": "application/json"},
-            json=payload,
+            f"{self.base_url}/{method}",
             timeout=REQUEST_TIMEOUT,
+            **kwargs,
         )
         if not response.ok:
-            raise WhatsAppError(
-                f"WhatsApp API respondió {response.status_code}: {clean_message(response.text, 500)}"
-            )
-
-    def _upload_image(self, screenshot: Path) -> str:
-        with screenshot.open("rb") as handle:
-            response = requests.post(
-                f"{self.base_url}/media",
-                headers=self.headers,
-                data={"messaging_product": "whatsapp", "type": "image/png"},
-                files={"file": (screenshot.name, handle, "image/png")},
-                timeout=REQUEST_TIMEOUT,
-            )
-        if not response.ok:
-            raise WhatsAppError(
-                f"No se pudo subir la captura a WhatsApp ({response.status_code}): "
+            raise TelegramError(
+                f"Telegram API respondió {response.status_code}: "
                 f"{clean_message(response.text, 500)}"
             )
-        media_id = response.json().get("id")
-        if not media_id:
-            raise WhatsAppError("WhatsApp no devolvió un identificador para la captura.")
-        return str(media_id)
+        payload = response.json()
+        if not payload.get("ok", False):
+            raise TelegramError(f"Telegram rechazó la petición: {clean_message(response.text, 500)}")
 
-    def _send_template(
-        self,
-        template_name: str,
-        body_values: list[str],
-        screenshot: Optional[Path] = None,
-    ) -> None:
+    def send_message(self, message: str) -> None:
         if not self.configured:
-            print("[WhatsApp] No configurado: se omite la notificación.")
+            print("[Telegram] No configurado: se omite la notificación.")
             return
-
-        components: list[dict[str, Any]] = [
-            {
-                "type": "body",
-                "parameters": [
-                    {"type": "text", "text": clean_message(value, 1024)}
-                    for value in body_values
-                ],
-            }
-        ]
-        if screenshot is not None and screenshot.exists():
-            media_id = self._upload_image(screenshot)
-            components.insert(
-                0,
-                {
-                    "type": "header",
-                    "parameters": [{"type": "image", "image": {"id": media_id}}],
-                },
-            )
-
-        payload = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": self.recipient,
-            "type": "template",
-            "template": {
-                "name": template_name,
-                "language": {"code": self.language},
-                "components": components,
+        self._post(
+            "sendMessage",
+            data={
+                "chat_id": self.chat_id,
+                "text": message,
+                "disable_web_page_preview": "false",
             },
-        }
-        self._post_json("messages", payload)
-        print(f"[WhatsApp] Plantilla '{template_name}' aceptada por la API.")
+        )
+        print("[Telegram] Mensaje enviado.")
+
+    def send_photo(self, screenshot: Optional[Path], caption: str) -> None:
+        if not self.configured:
+            print("[Telegram] No configurado: se omite la notificación.")
+            return
+        if screenshot is None or not screenshot.exists():
+            self.send_message(caption)
+            return
+        with screenshot.open("rb") as handle:
+            self._post(
+                "sendPhoto",
+                data={"chat_id": self.chat_id, "caption": caption[:1024]},
+                files={"photo": (screenshot.name, handle, "image/png")},
+            )
+        print("[Telegram] Captura enviada.")
 
     def send_price_drop(self, title: str, old_price: float, new_price: float) -> None:
         percentage = (old_price - new_price) / old_price * 100
-        self._send_template(
-            self.price_template,
-            [
-                title,
-                f"{old_price:.2f}",
-                f"{new_price:.2f}",
-                f"-{percentage:.1f}%",
-                PRODUCT_URL,
-            ],
+        self.send_message(
+            "🚨 Bajada de precio detectada\n\n"
+            f"Producto: {title}\n"
+            f"Antes: {old_price:.2f} €\n"
+            f"Ahora: {new_price:.2f} € (-{percentage:.1f}%)\n\n"
+            f"Ver producto: {PRODUCT_URL}"
         )
 
     def send_failure(self, error: Exception, screenshot: Optional[Path]) -> None:
-        self._send_template(
-            self.failure_template,
-            [
-                PRODUCT_URL,
-                f"{type(error).__name__}: {error}",
-                utc_now(),
-            ],
-            screenshot=screenshot,
+        caption = (
+            "⚠️ Error en el monitor de AliExpress\n\n"
+            f"Tipo: {type(error).__name__}\n"
+            f"Motivo: {clean_message(str(error), 700)}\n"
+            f"URL: {PRODUCT_URL}\n"
+            f"Hora UTC: {utc_now()}"
         )
+        self.send_photo(screenshot, caption)
 
 
 def make_page(browser: Browser) -> Page:
@@ -415,7 +372,7 @@ def make_page(browser: Browser) -> Page:
 
 
 def run_monitor() -> int:
-    notifier = WhatsAppNotifier()
+    notifier = TelegramNotifier()
     page: Optional[Page] = None
     screenshot: Optional[Path] = None
     try:
@@ -464,7 +421,7 @@ def run_monitor() -> int:
             notifier.send_failure(error, screenshot)
         except Exception as notification_error:
             print(
-                f"[error] También falló el aviso de WhatsApp: {notification_error}",
+                f"[error] También falló el aviso de Telegram: {notification_error}",
                 file=sys.stderr,
             )
         return 2
