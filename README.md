@@ -9,7 +9,7 @@ Este repositorio comprueba cada dos horas el precio en EUR del producto configur
 | Situación | Resultado |
 |---|---|
 | Primera lectura correcta | Guarda el precio inicial; no envía alerta. |
-| El precio baja | Envía una alerta de Telegram con precio anterior, nuevo, porcentaje y enlace. |
+| El precio baja | Envía una alerta de Telegram con precio anterior, nuevo, porcentaje, cupón aplicado y enlace. |
 | El precio sube o no cambia | Actualiza el estado si procede; no envía alerta. |
 | CAPTCHA, HTTP anómalo, cambio de página o error de extracción | Genera `artifacts/failure.png` y `artifacts/failure.txt`, intenta mandarlos a Telegram y falla el workflow para hacerlo visible. |
 
@@ -36,6 +36,8 @@ Los mensajes proactivos de Telegram funcionan siempre que el bot tenga acceso al
 4. Revisa el registro. Si hay CAPTCHA o fallo, descarga el artefacto `aliexpress-diagnostic-<id>` desde esa ejecución.
 
 La primera ejecución correcta fijará el precio base en `price_state.json`. Para probar inmediatamente una alerta de bajada sin esperar al mercado, reduce temporalmente el valor `price` de ese archivo, lanza el workflow manualmente y vuelve a dejarlo en el valor correcto después de comprobar la notificación.
+
+El campo `price` representa el **precio efectivo**: precio mostrado menos el cupón explícito detectado. También se guardan `display_price` y `coupon` para poder revisar cómo se calculó.
 
 ## Desarrollo local
 

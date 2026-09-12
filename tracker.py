@@ -23,6 +23,15 @@ from playwright.sync_api import Browser, Page, sync_playwright
 PRODUCT_URL = os.getenv(
     "PRODUCT_URL", "https://es.aliexpress.com/item/1005007999908066.html"
 )
+PRODUCT_URLS = tuple(
+    dict.fromkeys(
+        (
+            PRODUCT_URL,
+            PRODUCT_URL.replace("https://es.aliexpress.com", "https://www.aliexpress.com"),
+            PRODUCT_URL.replace("https://es.aliexpress.com", "https://m.aliexpress.com"),
+        )
+    )
+)
 STATE_FILE = Path(os.getenv("STATE_FILE", "price_state.json"))
 ARTIFACTS_DIR = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
 REQUEST_TIMEOUT = 30
@@ -49,6 +58,11 @@ class PriceResult:
     price: float
     source: str
     title: str
+    coupon: float = 0.0
+
+    @property
+    def effective_price(self) -> float:
+        return max(0.0, self.price - self.coupon)
 
 
 def utc_now() -> str:
@@ -93,6 +107,91 @@ def price_from_texts(texts: Iterable[str]) -> Optional[float]:
         if price is not None:
             return price
     return None
+
+
+def detect_coupon(text: str) -> float:
+    """Return the largest explicitly advertised EUR coupon amount.
+
+    Only labels that identify a coupon/discount are considered; this avoids
+    treating shipping, stock counts, ratings or unrelated prices as coupons.
+    """
+    candidates: list[float] = []
+    coupon_pattern = re.compile(
+        r"(?:cup[oó]n|coupon|descuento|ahorra|save|off)[^\n€$]{0,80}?"
+        r"(?:[-−]\s*)?(\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*€?",
+        re.IGNORECASE,
+    )
+    for match in coupon_pattern.finditer(text):
+        context = text[max(0, match.start() - 40) : match.end() + 40].lower()
+        if any(word in context for word in ("entrega", "delivery", "tardía", "late delivery")):
+            continue
+        amount = parse_price(match.group(1))
+        if amount is not None and 0 < amount < 10_000:
+            candidates.append(amount)
+
+    # AliExpress commonly renders a promotion as “-30,00€ en 239,00€”
+    # without using the word coupon. A negative EUR amount is unambiguously a
+    # discount, so include it while excluding ordinary positive prices.
+    for match in re.finditer(
+        r"[-−]\s*(\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*€",
+        text,
+        re.IGNORECASE,
+    ):
+        amount = parse_price(match.group(1))
+        if amount is not None and 0 < amount < 10_000:
+            candidates.append(amount)
+    return max(candidates, default=0.0)
+
+
+def page_price_candidates(page: Page) -> list[str]:
+    """Collect price-like values from DOM, attributes, JSON and visible text."""
+    values: list[str] = []
+    selectors = (
+        "meta[property='product:price:amount']",
+        "meta[itemprop='price']",
+        "[itemprop='price']",
+        "[data-pl='product-price']",
+        "[class*='price' i]",
+        "[class*='amount' i]",
+    )
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            for index in range(min(locator.count(), 80)):
+                element = locator.nth(index)
+                value = (
+                    element.get_attribute("content")
+                    or element.get_attribute("value")
+                    or element.inner_text(timeout=1_000)
+                )
+                if value:
+                    values.append(value)
+        except Exception:
+            continue
+    structured_values = page.evaluate(
+        """() => {
+          const roots = [window.runParams, window.__INITIAL_DATA__, window.__NEXT_DATA__];
+          const out = [];
+          const walk = (node, depth = 0) => {
+            if (depth > 7 || node === null || node === undefined) return;
+            if (typeof node === 'string' || typeof node === 'number') {
+              const value = String(node);
+              if (/\\d[.,]\\d{1,2}/.test(value) || /price|amount|coupon|discount|save|voucher/i.test(value)) out.push(value);
+              return;
+            }
+            if (Array.isArray(node)) { for (const item of node) walk(item, depth + 1); return; }
+            if (typeof node === 'object') {
+              for (const [key, value] of Object.entries(node)) {
+                if (/price|amount|coupon|discount|save|voucher|promotion/i.test(key)) walk(value, depth + 1);
+              }
+            }
+          };
+          for (const root of roots) walk(root);
+          return out;
+        }"""
+    )
+    values.extend(structured_values or [])
+    return values
 
 
 def visible_text(page: Page) -> str:
@@ -141,7 +240,7 @@ def ensure_not_captcha(page: Page) -> None:
 
 
 def extract_price(page: Page) -> PriceResult:
-    """Extract only product-price candidates, never generic coupon amounts."""
+    """Extract product price, advertised coupon and effective price inputs."""
     ensure_not_captcha(page)
 
     title = "Producto AliExpress"
@@ -152,6 +251,9 @@ def extract_price(page: Page) -> PriceResult:
             title = clean_message(page.title(), 180)
         except Exception:
             pass
+
+    body_text = visible_text(page)
+    coupon = detect_coupon(body_text)
 
     # Prefer semantic metadata and the visible primary-price component.
     metadata_selectors = (
@@ -168,7 +270,7 @@ def extract_price(page: Page) -> PriceResult:
             value = locator.get_attribute("content") or locator.get_attribute("value") or locator.inner_text()
             price = parse_price(value)
             if price is not None:
-                return PriceResult(price=price, source=f"metadata:{selector}", title=title)
+                return PriceResult(price=price, source=f"metadata:{selector}", title=title, coupon=coupon)
         except Exception:
             continue
 
@@ -184,39 +286,56 @@ def extract_price(page: Page) -> PriceResult:
             texts = page.locator(selector).all_inner_texts()
             price = price_from_texts(texts)
             if price is not None:
-                return PriceResult(price=price, source=f"dom:{selector}", title=title)
+                return PriceResult(price=price, source=f"dom:{selector}", title=title, coupon=coupon)
         except Exception:
             continue
 
     # AliExpress places structured product data in JavaScript objects. Read it but
     # do not modify browser fingerprints or use anti-detection workarounds.
-    structured_prices = page.evaluate(
-        """() => {
-          const roots = [window.runParams, window.__INITIAL_DATA__, window.__NEXT_DATA__];
-          const paths = [
-            ['data','priceComponent','discountPrice','minPrice'],
-            ['data','priceComponent','discountPrice','maxPrice'],
-            ['priceModule','minActivityAmount','value'],
-            ['priceModule','formatedActivityPrice'],
-            ['data','priceComponent','originalPrice','minPrice']
-          ];
-          const result = [];
-          for (const root of roots) {
-            if (!root) continue;
-            for (const path of paths) {
-              let node = root;
-              for (const key of path) node = node && node[key];
-              if (node !== undefined && node !== null) result.push(String(node));
-            }
-          }
-          return result;
-        }"""
-    )
-    price = price_from_texts(structured_prices or [])
+    structured_prices = page_price_candidates(page)
+    price = price_from_texts(structured_prices)
     if price is not None:
-        return PriceResult(price=price, source="structured-page-data", title=title)
+        # The page text is a final fallback. It is intentionally used only
+        # when a EUR marker occurs near a product-price/coupon context.
+        return PriceResult(price=price, source="structured-or-dom-data", title=title, coupon=coupon)
+
+    contextual_prices = re.findall(
+        r"(?i)(?:precio|price|ahora|now|EUR|€)[^\n]{0,40}?(\d+(?:[.,]\d{1,2})?)\s*(?:€|EUR)?",
+        body_text,
+    )
+    price = price_from_texts(contextual_prices)
+    if price is not None:
+        return PriceResult(price=price, source="visible-text-context", title=title, coupon=coupon)
+
+    visible_currency_prices = re.findall(
+        r"(?<![\d-])(\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(?:€|EUR)",
+        body_text,
+        re.IGNORECASE,
+    )
+    price = price_from_texts(visible_currency_prices)
+    if price is not None:
+        return PriceResult(price=price, source="visible-currency-text", title=title, coupon=coupon)
 
     raise PriceNotFoundError("No se encontró un precio de producto fiable en la página.")
+
+
+def navigate_and_extract(page: Page) -> PriceResult:
+    """Try equivalent official AliExpress hosts when one response is empty."""
+    last_error: Optional[Exception] = None
+    for url in PRODUCT_URLS:
+        try:
+            print(f"[monitor] Consultando {url}")
+            response = page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            if response is not None and response.status >= 400:
+                raise TrackerError(f"AliExpress devolvió HTTP {response.status}.")
+            page.wait_for_timeout(2_500)
+            if not visible_text(page).strip():
+                raise PriceNotFoundError("La respuesta de AliExpress llegó vacía.")
+            return extract_price(page)
+        except Exception as error:
+            last_error = error
+            print(f"[monitor] Falló {url}: {error}; probando otra URL equivalente.")
+    raise last_error or PriceNotFoundError("No se pudo leer la página de AliExpress.")
 
 
 def capture_page(page: Optional[Page], label: str) -> Optional[Path]:
@@ -254,10 +373,12 @@ def load_state() -> dict[str, Any]:
         raise TrackerError(f"El estado {STATE_FILE} no es válido: {exc}") from exc
 
 
-def save_state(price: float, title: str) -> None:
+def save_state(price: float, title: str, display_price: Optional[float] = None, coupon: float = 0.0) -> None:
     state = {
         "price": round(price, 2),
         "currency": "EUR",
+        "display_price": round(display_price if display_price is not None else price, 2),
+        "coupon": round(coupon, 2),
         "product_url": PRODUCT_URL,
         "product_title": title,
         "updated_at_utc": utc_now(),
@@ -324,13 +445,27 @@ class TelegramNotifier:
             )
         print("[Telegram] Captura enviada.")
 
-    def send_price_drop(self, title: str, old_price: float, new_price: float) -> None:
+    def send_price_drop(
+        self,
+        title: str,
+        old_price: float,
+        new_price: float,
+        display_price: Optional[float] = None,
+        coupon: float = 0.0,
+    ) -> None:
         percentage = (old_price - new_price) / old_price * 100
+        coupon_line = f"Cupón aplicado: -{coupon:.2f} €\n" if coupon > 0 else ""
+        display_line = (
+            f"Precio mostrado: {display_price:.2f} €\n"
+            if display_price is not None and display_price != new_price
+            else ""
+        )
         self.send_message(
             "🚨 Bajada de precio detectada\n\n"
             f"Producto: {title}\n"
             f"Antes: {old_price:.2f} €\n"
-            f"Ahora: {new_price:.2f} € (-{percentage:.1f}%)\n\n"
+            f"Ahora: {new_price:.2f} € (-{percentage:.1f}%)\n"
+            f"{display_line}{coupon_line}\n"
             f"Ver producto: {PRODUCT_URL}"
         )
 
@@ -380,14 +515,11 @@ def run_monitor() -> int:
             browser = playwright.chromium.launch(headless=True)
             try:
                 page = make_page(browser)
-                print(f"[monitor] Consultando {PRODUCT_URL}")
-                response = page.goto(PRODUCT_URL, wait_until="domcontentloaded", timeout=60_000)
-                if response is not None and response.status >= 400:
-                    raise TrackerError(f"AliExpress devolvió HTTP {response.status}.")
-                page.wait_for_timeout(2_500)
-                result = extract_price(page)
+                result = navigate_and_extract(page)
                 print(
-                    f"[monitor] Precio: {result.price:.2f} EUR "
+                    f"[monitor] Precio mostrado: {result.price:.2f} EUR; "
+                    f"cupón: {result.coupon:.2f} EUR; "
+                    f"precio efectivo: {result.effective_price:.2f} EUR "
                     f"(origen: {result.source}; producto: {result.title})"
                 )
             except Exception:
@@ -399,15 +531,16 @@ def run_monitor() -> int:
 
         state = load_state()
         old_price = parse_price(state.get("price"))
-        save_state(result.price, result.title)
+        effective_price = result.effective_price
+        save_state(effective_price, result.title, result.price, result.coupon)
 
         if old_price is None:
             print("[monitor] Estado inicial creado; no se envía alerta.")
-        elif result.price < old_price:
-            print(f"[monitor] Bajada detectada: {old_price:.2f} -> {result.price:.2f} EUR")
-            notifier.send_price_drop(result.title, old_price, result.price)
-        elif result.price > old_price:
-            print(f"[monitor] Subida detectada: {old_price:.2f} -> {result.price:.2f} EUR")
+        elif effective_price < old_price:
+            print(f"[monitor] Bajada efectiva detectada: {old_price:.2f} -> {effective_price:.2f} EUR")
+            notifier.send_price_drop(result.title, old_price, effective_price, result.price, result.coupon)
+        elif effective_price > old_price:
+            print(f"[monitor] Subida efectiva detectada: {old_price:.2f} -> {effective_price:.2f} EUR")
         else:
             print("[monitor] Sin cambios de precio.")
         return 0
@@ -437,6 +570,10 @@ def run_self_test() -> int:
     for raw, expected in cases.items():
         assert parse_price(raw) == expected, f"parse_price({raw!r})"
     assert price_from_texts(["cupón -30,00€", "277,39€"]) == 277.39
+    assert detect_coupon("Cupón de 30,00€ en el producto") == 30.0
+    assert detect_coupon("-30,00€ en 239,00€") == 30.0
+    assert detect_coupon("Cupón de 1,00€ por entrega tardía") == 0.0
+    assert PriceResult(277.39, "test", "Reloj", 30.0).effective_price == 247.39
     print("[self-test] OK")
     return 0
 
