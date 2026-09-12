@@ -1,5 +1,7 @@
 # Monitor de precio de AliExpress → Telegram
 
+Para ejecutarlo en tu propio PC con una sesión persistente de Chromium, consulta [README_LOCAL_WINDOWS.md](README_LOCAL_WINDOWS.md).
+
 Este repositorio comprueba cada dos horas el precio en EUR del producto configurado y avisa por **Telegram Bot API** cuando el importe baja. El último precio confirmado se conserva en `price_state.json`, que se actualiza automáticamente mediante GitHub Actions.
 
 > **Diseño ante CAPTCHA:** el monitor no intenta arrastrar controles, simular comportamiento humano ni sortear mecanismos de protección. Si AliExpress solicita una verificación o el precio no puede validarse, termina la ejecución, conserva una captura en el artefacto de GitHub Actions y manda esa captura a Telegram mediante el bot configurado. Así se obtiene evidencia del problema sin infringir las protecciones de la web.

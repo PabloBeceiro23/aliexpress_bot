@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 import requests
-from playwright.sync_api import Browser, Page, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
 PRODUCT_URL = os.getenv(
     "PRODUCT_URL", "https://es.aliexpress.com/item/1005007999908066.html"
@@ -506,15 +506,38 @@ def make_page(browser: Browser) -> Page:
     return context.new_page()
 
 
+def make_local_page(playwright: Any) -> tuple[BrowserContext, Page]:
+    """Open a persistent local Chromium profile for manual CAPTCHA handling."""
+    profile_dir = Path(os.getenv("LOCAL_PROFILE_DIR", "aliexpress_profile"))
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    headless = os.getenv("LOCAL_HEADLESS", "0").lower() in {"1", "true", "yes"}
+    context = playwright.chromium.launch_persistent_context(
+        user_data_dir=str(profile_dir),
+        headless=headless,
+        locale="es-ES",
+        timezone_id="Europe/Madrid",
+        viewport={"width": 1440, "height": 1200},
+        extra_http_headers={"Accept-Language": "es-ES,es;q=0.9"},
+        args=["--start-maximized"] if not headless else [],
+    )
+    return context, context.pages[0] if context.pages else context.new_page()
+
+
 def run_monitor() -> int:
     notifier = TelegramNotifier()
     page: Optional[Page] = None
     screenshot: Optional[Path] = None
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            local_profile = os.getenv("LOCAL_PROFILE_DIR")
+            browser: Optional[Browser] = None
+            local_context: Optional[BrowserContext] = None
             try:
-                page = make_page(browser)
+                if local_profile:
+                    local_context, page = make_local_page(playwright)
+                else:
+                    browser = playwright.chromium.launch(headless=True)
+                    page = make_page(browser)
                 result = navigate_and_extract(page)
                 print(
                     f"[monitor] Precio mostrado: {result.price:.2f} EUR; "
@@ -527,7 +550,10 @@ def run_monitor() -> int:
                 screenshot = capture_page(page, "failure")
                 raise
             finally:
-                browser.close()
+                if local_context is not None:
+                    local_context.close()
+                if browser is not None:
+                    browser.close()
 
         state = load_state()
         old_price = parse_price(state.get("price"))
