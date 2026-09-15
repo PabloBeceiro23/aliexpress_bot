@@ -73,33 +73,3 @@ Si ya tienes las credenciales configuradas únicamente como **Secrets de GitHub*
 Cuando aparece un CAPTCHA, el script guarda `artifacts/failure.png` y `artifacts/failure.txt`, intenta enviar la captura por Telegram y termina esa comprobación. El proceso principal espera dos horas y vuelve a intentarlo. Si el navegador está visible, puedes ejecutar `tracker.py` manualmente, resolver el CAPTCHA y dejar guardado el perfil para posteriores consultas.
 
 El monitor no automatiza clics, deslizamientos ni resolución de CAPTCHA.
-
-## Consumo eléctrico estimado
-
-El bot no utiliza la RTX 5070 para inteligencia artificial ni para acelerar el navegador. Playwright usa el procesador y la GPU solo para renderizar Chromium durante la consulta; entre consultas el proceso duerme.
-
-Intel especifica para el i5-12400 **65 W de Processor Base Power** y **117 W de Maximum Turbo Power**. NVIDIA especifica para la RTX 5070 **250 W de Total Graphics Power** y recomienda una fuente de 650 W; esos valores son límites de carga, no el consumo del bot en reposo.
-
-Estimación orientativa del equipo completo medido en la pared:
-
-| Estado | Equipo completo aproximado |
-|---|---:|
-| PC encendido, monitor apagado, sin carga | 45–80 W |
-| Monitor local dormido entre comprobaciones | 45–80 W |
-| Chromium realizando una consulta | 70–130 W durante unos segundos o minutos |
-| Carga completa de CPU/GPU | No corresponde a este bot; puede superar 350–500 W según placa, fuente y modelo de GPU |
-
-Con una media aproximada de 55 W durante 24 horas:
-
-```text
-0,055 kW × 24 h = 1,32 kWh/día
-1,32 × 30 ≈ 39,6 kWh/mes
-```
-
-El coste mensual sería `39,6 × tu precio por kWh`. Por ejemplo, a 0,20 €/kWh serían unos **7,90 €/mes**, sin incluir el monitor. A 70 W constantes serían aproximadamente 50,4 kWh/mes, unos 10,10 €/mes a 0,20 €/kWh.
-
-La medición real depende mucho de la placa base, fuente, número y frecuencia de monitores, discos, iluminación RGB, configuración de suspensión y drivers. Para saberlo con precisión, usa un medidor de enchufe; las lecturas de software suelen excluir pérdidas de la fuente.
-
-## Recomendación de energía
-
-Configura Windows para apagar la pantalla, pero no suspender el equipo mientras el monitor esté activo. Si quieres reducir el consumo, puedes dejar el proceso detenido cuando no necesites el seguimiento; Chromium no necesita permanecer abierto entre comprobaciones si usas el lanzador estándar, aunque el perfil se conserva.
